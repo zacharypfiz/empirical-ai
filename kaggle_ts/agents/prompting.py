@@ -55,12 +55,31 @@ def build_improve_prompt(context: Dict[str, str]) -> str:
     challenge_trunc = truncate_by_tokens(challenge, challenge_budget) if challenge else ""
     feedback_trunc = truncate_by_tokens(feedback, feedback_budget) if feedback else ""
     dataset_root = context.get("dataset_root", "").strip()
+    # Validation-view is the only supported mode when validating
+    validation_view = str(context.get("validation_view", "")).strip().lower() in ("1","true","yes")
 
     parts: List[str] = [header]
     if challenge_trunc:
         parts.append(f"Challenge context:\n{challenge_trunc}\n\n")
     if dataset_root:
         parts.append(f"Dataset root: {dataset_root}\n\n")
+    if validation_view:
+        parts.append(
+            "Validation view is provided.\n"
+            "- train.csv already excludes validation IDs.\n"
+            "- test.csv contains ONLY the validation rows with no labels.\n"
+            "- Train on train.csv and predict test.csv.\n"
+            "- Write submission.csv with exactly [PassengerId, Survived] for test.csv.\n\n"
+        )
+    # Concise node contract to improve reliability of generated code
+    parts.append(
+        "Requirements:\n"
+        "- Load data from the DATASET_ROOT environment variable; never hardcode paths.\n"
+        "- Do not read labels; only write submission.csv in CWD with columns PassengerId,Survived.\n"
+        "- Use sklearn ColumnTransformer with Pipeline: imputer+scaler for numeric, OneHotEncoder(handle_unknown='ignore') for categorical.\n"
+        "- Avoid nonstandard dependencies (e.g., category_encoders); use pandas, numpy, scikit-learn (optionally lightgbm/xgboost if available).\n"
+        "- Keep code concise and fast; avoid heavy CV/ensembles unless quick.\n\n"
+    )
     parts.append(f"Instruction: {instruction}\n")
     parts.append(f"Feedback: {feedback_trunc}\n\n")
     parts.append("Parent code:\n" + parent_trunc + "\n")

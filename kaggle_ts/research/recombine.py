@@ -36,9 +36,12 @@ async def synthesize_hybrids(pairs: List[Tuple[Node, Node]], max_tokens: int = 5
             code_a=a.code,
             code_b=b.code,
         )
-        text = await provider.generate(prompt, max_tokens=max_tokens)
-        instr = text.strip().splitlines()[0].strip()
+        try:
+            text = await provider.generate(prompt, max_tokens=max_tokens)
+        except Exception:
+            # Skip this pair on provider failure; keep search moving
+            continue
+        instr = (text or "").strip().splitlines()[0].strip()
         if instr:
             out.append(instr)
     return out
-

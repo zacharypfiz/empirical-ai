@@ -4,8 +4,12 @@ version = "0.1.0"
 description = "Flat PUCT orchestrator for iterative code generation (stubbed)"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "Proprietary"}
+license = { text = "Proprietary" }
 authors = [{ name = "Empirical AI" }]
+dependencies = [
+    "google-genai>=1.36.0",
+    "python-dotenv>=1.1.1",
+]
 
 [project.scripts]
 kaggle-ts = "kaggle_ts.cli:main"
@@ -16,3 +20,12 @@ build-backend = "setuptools.build_meta"
 
 [project.optional-dependencies]
 gemini = ["google-genai>=0.3.0"]
+
+[tool.setuptools.packages.find]
+include = ["kaggle_ts*"]
+exclude = [
+  "runs*",
+  "docker*",
+  "challenge*",
+  "spec*",
+]

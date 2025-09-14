@@ -5,7 +5,7 @@ import itertools
 import uuid
 from typing import Callable, Dict, List
 
-from ..agents.base import LLMRewriter, RunResult, Sandbox, Scorer
+from ..agents.base import LLMRewriter, RunResult, Sandbox, Scorer, sanitize_code_output
 from ..core.controller import select_parents
 from ..core.types import Node, SolutionTree
 from ..agents.prompting import build_improve_prompt, build_feedback
@@ -30,6 +30,9 @@ async def expand_once(
     challenge_text: str | None = None,
     max_prompt_tokens: int = 2048,
     dataset_root_hint: str | None = None,
+    llm_timeout_seconds: int = 60,
+    validation_labels_path: str | None = None,
+    validation_view: bool = False,
 ) -> Node:
     fb = build_feedback(parent.score, parent.logs if isinstance(parent.logs, dict) else {}, max_chars=800)
     prompt = build_improve_prompt(
@@ -40,9 +43,25 @@ async def expand_once(
             "challenge": challenge_text or "",
             "max_prompt_tokens": str(max_prompt_tokens),
             "dataset_root": dataset_root_hint or "",
+            "validation_labels": (validation_labels_path or "") if not validation_view else "",
+            "validation_view": "true" if validation_view else "false",
         }
     )
-    child_code = await rewriter.run({"prompt": prompt})
+    try:
+        child_code = await asyncio.wait_for(rewriter.run({"prompt": prompt}), timeout=llm_timeout_seconds)
+        child_code = sanitize_code_output(child_code)
+        # Guard: if LLM returned prompt text or error banner, fallback to parent
+        bad_markers = [
+            "Gemini API error",
+            "You are an expert Python developer",
+            "Challenge context:",
+            "Rewrite the code",
+        ]
+        if not child_code.strip() or any(m in child_code for m in bad_markers):
+            raise RuntimeError("non-code output from LLM")
+    except Exception:
+        # Treat LLM failure as a no-op mutation with a marker comment
+        child_code = parent.code + "\n# llm_timeout_or_error"
     run: RunResult = await sandbox.run(child_code, timeout_s=timeout_seconds)
     if run.error or run.timed_out:
         score = float("-1e300")
@@ -60,6 +79,7 @@ async def expand_once(
             "artifacts": run.artifacts,
             "timed_out": run.timed_out,
             "error": run.error,
+            "instruction": instruction or "",
         },
     )
     return child
@@ -83,6 +103,11 @@ async def run_search(
     recombine_top: int = 4,
     max_prompt_tokens: int = 2048,
     dataset_root_hint: str | None = None,
+    dataset_root_prompt_hint: str | None = None,
+    llm_timeout_seconds: int = 60,
+    emb_timeout_seconds: int = 30,
+    validation_labels_path: str | None = None,
+    force_validation_view: bool = False,
 ) -> Node | None:
     if tree.size() == 0:
         # Initialize with a simple baseline root
@@ -104,6 +129,20 @@ async def run_search(
         seed_index += 1
         return s
 
+    # Auto-detect validation view (host path) unless forced
+    validation_view = bool(force_validation_view)
+    if not validation_view and validation_labels_path and dataset_root_hint:
+        try:
+            import os, csv
+            test_path = os.path.join(dataset_root_hint, "test.csv")
+            if os.path.exists(test_path):
+                with open(test_path, "r", newline="", encoding="utf-8") as f:
+                    reader = csv.reader(f)
+                    header = next(reader, [])
+                validation_view = ("Survived" not in header)
+        except Exception:
+            validation_view = False
+
     async def _task(parent: Node, seed_instruction: str | None) -> Node:
         async with sem:
             return await expand_once(
@@ -116,17 +155,31 @@ async def run_search(
                 instruction=seed_instruction,
                 challenge_text=challenge_text,
                 max_prompt_tokens=max_prompt_tokens,
-                dataset_root_hint=dataset_root_hint,
+                dataset_root_hint=(dataset_root_prompt_hint or dataset_root_hint),
+                llm_timeout_seconds=llm_timeout_seconds,
+                validation_labels_path=validation_labels_path,
+                validation_view=validation_view,
             )
 
     while tree.size() < max_nodes:
         to_expand = select_parents(tree, c_puct=c_puct, k=min(k_parallel, max_nodes - tree.size()))
+        if not to_expand:
+            # Defensive: break to avoid stalling if selection returns no candidates
+            break
         tasks = []
         for p in to_expand:
             instr = next_seed()
             tasks.append(asyncio.create_task(_task(p, instr)))
         children = await asyncio.gather(*tasks)
         for parent, child in zip(to_expand, children):
+            # Persist artifacts before storing node records
+            if store is not None:
+                try:
+                    persisted = store.persist_artifacts(child.id, child.logs.get("artifacts", {}))
+                    if persisted:
+                        child.logs["artifacts"] = persisted
+                except Exception:
+                    pass
             tree.add(child)
             # Backpropagate visit increments up the ancestor chain
             current = parent
@@ -159,7 +212,7 @@ async def run_search(
             embprov = embeddings_provider()
             if embprov and len(top) >= 2:
                 try:
-                    vecs = await embprov.embed([n.code for n in top])
+                    vecs = await asyncio.wait_for(embprov.embed([n.code for n in top]), timeout=emb_timeout_seconds)
                     remaining = list(range(len(top)))
                     def cosine(i: int, j: int) -> float:
                         import math

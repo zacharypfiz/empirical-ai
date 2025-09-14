@@ -36,6 +36,12 @@ def _parse_args() -> argparse.Namespace:
     s_search.add_argument("--id-col", type=str, default=None, help="Override ID column name for metrics")
     s_search.add_argument("--label-col", type=str, default=None, help="Override label column name for metrics")
     s_search.add_argument("--pred-col", type=str, default=None, help="Override prediction column name for metrics")
+    s_search.add_argument("--llm-timeout-seconds", type=int, default=60, help="Timeout for LLM generation per expansion")
+    s_search.add_argument("--emb-timeout-seconds", type=int, default=30, help="Timeout for embedding calls during recombination")
+    s_search.add_argument("--runs-dir", type=str, default="runs", help="Directory to store nodes/logs/artifacts")
+    s_search.add_argument("--fresh", action="store_true", help="Clear prior nodes/logs/artifacts in runs dir before starting")
+    s_search.add_argument("--code-max-output-tokens", type=int, default=None, help="Max output tokens for code generation (env CODE_MAX_OUTPUT_TOKENS as fallback)")
+    # Validation-view is the only supported validation workflow now; no separate flag needed.
 
     s_research = sub.add_parser("research", help="Synthesize strategy ideas from challenge.md")
     s_research.add_argument("--challenge-path", type=str, default="challenge/challenge.md")
@@ -45,6 +51,15 @@ def _parse_args() -> argparse.Namespace:
     s_embed.add_argument("--nodes", type=str, default="runs/nodes.jsonl")
     s_embed.add_argument("--out", type=str, default="runs/embeddings.jsonl")
     s_embed.add_argument("--batch-size", type=int, default=16)
+
+    s_makeval = sub.add_parser("make-val", help="Create validation labels CSV from train.csv")
+    s_makeval.add_argument("--train-path", type=str, default="challenge/data/train.csv")
+    s_makeval.add_argument("--out", type=str, default="challenge/data/val_labels.csv")
+    s_makeval.add_argument("--id-col", type=str, default="PassengerId")
+    s_makeval.add_argument("--label-col", type=str, default="Survived")
+    s_makeval.add_argument("--test-size", type=float, default=0.2)
+    s_makeval.add_argument("--random-state", type=int, default=42)
+    s_makeval.add_argument("--no-stratify", action="store_true")
 
     return p.parse_args()
 
@@ -57,7 +72,13 @@ def main() -> None:
         from .config import code_llm_provider
         from .agents.stubs import StubSandbox, StubScorer
 
-        rewriter = LLMRewriter(code_llm_provider())
+        # Code output token budget (flag > env > default)
+        code_max_env = os.getenv("CODE_MAX_OUTPUT_TOKENS")
+        try:
+            code_max_tokens = args.code_max_output_tokens if args.code_max_output_tokens is not None else (int(code_max_env) if code_max_env else None)
+        except Exception:
+            code_max_tokens = None
+        rewriter = LLMRewriter(code_llm_provider(), default_max_tokens=code_max_tokens)
         challenge_text = None
         if args.challenge_path and os.path.exists(args.challenge_path):
             with open(args.challenge_path, "r", encoding="utf-8") as f:
@@ -95,12 +116,26 @@ def main() -> None:
             # auto-mount dataset root to /data:ro
             if dataset_root_hint and os.path.isdir(dataset_root_hint):
                 mounts.setdefault(dataset_root_hint, "/data:ro")
+            # Validation labels handling: mount labels dir if not inside dataset root
+            env_map = {"DATASET_ROOT": "/data" if dataset_root_hint else ""}
+            if args.validation_labels:
+                labels_abs = os.path.abspath(args.validation_labels)
+                set_env_label = None
+                if dataset_root_hint and labels_abs.startswith(os.path.abspath(dataset_root_hint) + os.sep):
+                    # inside dataset root; refer via /data relative
+                    rel = os.path.relpath(labels_abs, os.path.abspath(dataset_root_hint))
+                    set_env_label = "/data/" + rel.replace(os.sep, "/")
+                else:
+                    labels_dir = os.path.dirname(labels_abs)
+                    mounts.setdefault(labels_dir, "/labels:ro")
+                    set_env_label = "/labels/" + os.path.basename(labels_abs)
+                env_map["VALIDATION_LABELS"] = set_env_label
             sandbox = DockerSandbox(
                 image=args.docker_image,
                 cpus=args.docker_cpus,
                 memory=args.docker_memory,
                 mounts=mounts,
-                env={"DATASET_ROOT": "/data" if dataset_root_hint else ""},
+                env=env_map,
             )
         else:
             try:
@@ -109,6 +144,8 @@ def main() -> None:
                 env = {}
                 if dataset_root_hint and os.path.isdir(dataset_root_hint):
                     env["DATASET_ROOT"] = dataset_root_hint
+                if args.validation_labels and os.path.exists(args.validation_labels):
+                    env["VALIDATION_LABELS"] = os.path.abspath(args.validation_labels)
                 sandbox = LocalSandbox(env=env)
             except Exception:
                 from .agents.stubs import StubSandbox
@@ -121,7 +158,12 @@ def main() -> None:
                 ideas = [json.loads(line) for line in f if line.strip()]
             seeds = [i.get("summary") or i.get("title") for i in ideas][: args.seeds]
         from .persistence.jsonl import RunStore
-        store = RunStore()
+        store = RunStore(base_dir=args.runs_dir)
+        if args.fresh:
+            store.clean()
+        # Validation-view is the default when validation labels are provided
+        force_validation_view = bool(args.validation_labels)
+
         best = asyncio.run(
             run_search(
                 max_nodes=args.max_nodes,
@@ -139,7 +181,12 @@ def main() -> None:
                 recombine_after=(args.recombine_after or None),
                 recombine_top=args.recombine_top,
                 max_prompt_tokens=args.max_prompt_tokens,
-                dataset_root_hint=("/data" if (args.docker and dataset_root_hint) else dataset_root_hint),
+                dataset_root_hint=dataset_root_hint,  # host path for detection
+                dataset_root_prompt_hint=("/data" if (args.docker and dataset_root_hint) else dataset_root_hint),
+                llm_timeout_seconds=args.llm_timeout_seconds,
+                emb_timeout_seconds=args.emb_timeout_seconds,
+                validation_labels_path=("/data/val_labels.csv" if (args.docker and args.validation_labels) else (os.path.abspath(args.validation_labels) if args.validation_labels else None)),
+                force_validation_view=force_validation_view,
             )
         )
         if best is None:
@@ -161,6 +208,18 @@ def main() -> None:
         from .analysis.embeddings import embed_nodes
         n = asyncio.run(embed_nodes(args.nodes, args.out, args.batch_size))
         print(f"Wrote embeddings for {n} nodes to {args.out}")
+    elif args.cmd == "make-val":
+        from .utils.split_val import make_validation_labels
+        n = make_validation_labels(
+            train_path=args.train_path,
+            out_path=args.out,
+            id_col=args.id_col,
+            label_col=args.label_col,
+            test_size=args.test_size,
+            random_state=args.random_state,
+            stratify=(not args.no_stratify),
+        )
+        print(f"Wrote {n} validation rows to {args.out}")
 
 
 if __name__ == "__main__":  # pragma: no cover

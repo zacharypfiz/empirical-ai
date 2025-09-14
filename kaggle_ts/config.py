@@ -3,6 +3,13 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+# Load .env file if it exists
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 
 def _has_gemini() -> bool:
     return bool(os.getenv("GEMINI_API_KEY"))
@@ -32,7 +39,7 @@ def code_llm_provider():
     tb_env: Optional[str] = os.getenv("CODE_THINKING_BUDGET")
     # Back-compat fallbacks
     if not model:
-        model = os.getenv("GEMINI_MODEL_CODE") or os.getenv("GEMINI_MODEL") or "gemini-2.5-pro"
+        model = os.getenv("GEMINI_MODEL_CODE") or os.getenv("GEMINI_MODEL") or "gemini-2.5-flash"
     if tb_env is None:
         tb_env = os.getenv("GEMINI_THINKING_BUDGET_CODE") or os.getenv("GEMINI_THINKING_BUDGET")
     thinking_budget = int(tb_env) if tb_env else None
@@ -52,7 +59,7 @@ def idea_llm_provider():
     if not model:
         model = os.getenv("GEMINI_MODEL_IDEA") or "gemini-2.5-flash"
     if tb_env is None:
-        tb_env = os.getenv("GEMINI_THINKING_BUDGET_IDEA", "0")
+        tb_env = os.getenv("GEMINI_THINKING_BUDGET_IDEA")
     thinking_budget = int(tb_env) if tb_env else None
     return GeminiProvider(model=model, thinking_budget=thinking_budget)
 
