@@ -1,0 +1,18 @@
+[project]
+name = "kaggle-ts"
+version = "0.1.0"
+description = "Flat PUCT orchestrator for iterative code generation (stubbed)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Proprietary"}
+authors = [{ name = "Empirical AI" }]
+
+[project.scripts]
+kaggle-ts = "kaggle_ts.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project.optional-dependencies]
+gemini = ["google-genai>=0.3.0"]

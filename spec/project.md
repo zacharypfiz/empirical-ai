@@ -21,7 +21,7 @@ Post-Hoc Analysis Module (Optional but Recommended): A set of tools used after t
 2.1. The LLM Rewriter
 Models:
 
-Code Generation: A powerful instruction-following LLM (e.g., Gemini Pro series).
+Code Generation: A powerful instruction-following LLM (e.g., Gemini 2.5 Pro).
 
 Idea Synthesis (for Recombination): A fast and capable model (e.g., Gemini 2.5 Flash) is used for summarizing and combining ideas.
 
@@ -120,7 +120,7 @@ Final Solution Selection: The final output is the code from the node in the enti
 4. Advanced Strategies: Seeding the Search with Research Ideas
 This is how the system moves from basic optimization to expert-level problem-solving.
 
-AI-Powered Ideation: Use external LLM-based tools (e.g., "Gemini Deep Research," "AI co-scientist") to generate an initial list of 5-10 distinct, high-level strategies for the Kaggle problem. Each strategy is formatted into a text summary.
+AI-Powered Ideation: Use external LLM-based tools (e.g., Exa search API with LLM) to generate an initial list of 5-10 distinct, high-level strategies for the Kaggle problem. Each strategy is formatted into a text summary.
 
 Seeding the Tree: Instead of a single root node, run several smaller, independent tree searches, each initialized with one of the AI-generated research ideas in its initial prompt.
 
@@ -151,7 +151,7 @@ Code Embedding:
 
 For each node u in the final tree, take its code snippet.
 
-Input the code into a text embedding model (e.g., Gemini text embedding model) to get a high-dimensional vector representation (e.g., 3072 dimensions).
+Input the code into a text embedding model (e.g., Gemini Embedding) to get a high-dimensional vector representation (e.g., 3072 dimensions).
 
 Purpose and Application:
 
@@ -160,3 +160,14 @@ Visualize Solution Space: Use dimensionality reduction techniques (e.g., UMAP, t
 Measure Novelty: Calculate the cosine similarity between a new node and its parent. A low similarity suggests a significant conceptual leap ("breakthrough").
 
 Verify Strategy Adherence: For runs seeded with a specific research idea, check if the resulting embeddings are distinct from runs with other ideas, confirming the LLM followed instructions.
+
+6. Alignment Notes and Algorithm Details (per paper)
+
+- Visit Accounting: Initialize the root with V(r)=1. When adding a new child u_c, set V(u_c)=1 and increment V for all ancestors of u_c (including its direct parent). Define N_total = sum_u V(u).
+- Flat Prior: Use a flat prior over nodes P_T(u) = 1/|T| to stabilize c_puct across tasks.
+- Selection Score: S(u) = RankScore_T(u) + c_puct * P_T(u) * sqrt(N_total) / (1 + V(u)), where RankScore_T(u) = (rank_T(u) - 1) / (|T| - 1) for |T|>1 else 1. Higher TaskScore is better; negate metrics where lower is better (e.g., MSE, WIS).
+- Selection Domain: The argmax for selection is over all nodes in T (flat selection). No rollouts are used; a node’s value is obtained by executing its code once in the sandbox.
+- Parallelization: Perform K-parallel expansions per round by selecting the top-K parents by S(u) and expanding them concurrently to accelerate throughput.
+- Prompt Policy: Include Challenge context (from kaggle.md), Parent code (truncated head+tail if needed), and Feedback (prev score, tail of stdout/stderr), plus an Instruction (improve/idea/recombination). Truncate long blocks with explicit head/tail delimiters.
+- Failure Policy: Timeouts, exceptions, or malformed/missing artifacts are scored at the worst penalty and retained in the tree with logs.
+- Persistence: Append each created node (code, score, visits, parent, logs, timestamp) to a JSONL file and write per-node logs for reproducibility.

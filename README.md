@@ -1,70 +1,59 @@
-# Empirical AI: Automated Kaggle Competition Solver
+# Empirical AI: LLM + Tree Search Pipeline
 
-This project implements an automated system that generates and iteratively refines Python code to achieve high scores in Kaggle competitions. It combines large language models (LLMs), tree search algorithms, and sandboxed code execution to explore the solution space efficiently.
+A minimal, reproducible pipeline that iteratively rewrites, executes, and scores Python code for a Kaggle‑style challenge using a flat PUCT controller, sandboxed runs, and optional research seeding, recombination, and embeddings.
 
-## Overview
+## Quick Start
 
-The system consists of two main components:
+- Prereqs: uv, Python 3.10+, optional Docker for sandboxing.
+- Optional LLM: set `GEMINI_API_KEY` in `.env` (falls back to stub without it).
 
-1. **Core Generation Loop**: An iterative process that creates, evaluates, and refines code solutions using:
-   - **TS Controller**: Selects parent solutions using PUCT algorithm
-   - **LLM Rewriter**: Generates new code variations using advanced prompt engineering
-   - **Sandbox**: Securely executes code against competition data
-   - **Scorer**: Evaluates performance on validation sets
+Project layout assumptions
+- Challenge text: `challenge/challenge.md`
+- Dataset root: `challenge/data` (train/test/labels)
 
-2. **Post-Hoc Analysis Module**: Tools for understanding the search process and solution space using code embeddings and visualization.
+## Setup
+- Install optional Gemini SDK (for LLM + embeddings):
+  - `uv add google-genai`
+- Configure `.env` as needed:
+  - `GEMINI_API_KEY=...`
+  - Optional model buckets: `CODE_MODEL`, `IDEA_MODEL`, `EMBEDDING_MODEL`
 
-## Key Features
+## Pipeline Steps
 
-- **Intelligent Code Mutation**: Uses LLMs to rewrite and improve code based on performance feedback
-- **Research Idea Integration**: Incorporates external research and expert strategies
-- **Automated Recombination**: Combines successful approaches from different solution branches
-- **Secure Execution**: Containerized sandbox with timeout and error handling
-- **Tree Search Optimization**: PUCT-based selection for efficient exploration
-- **Embedding Analysis**: Visualizes solution space and measures novelty
+1) Generate strategy ideas (from challenge.md)
+- `uv run python -m kaggle_ts.cli research --challenge-path challenge/challenge.md --out runs/ideas.jsonl --max-ideas 8`
 
-## Architecture
+2) Run search (K-parallel, flat PUCT)
+- Local (stub sandbox/scorer):
+  - `uv run python -m kaggle_ts.cli search --max-nodes 200 --k 8 --c-puct 1.2 --challenge-path challenge/challenge.md --dataset-root challenge/data --ideas-path runs/ideas.jsonl --seeds 3`
+- With validation + metric (e.g., Titanic accuracy):
+  - `uv run python -m kaggle_ts.cli search --max-nodes 200 --k 8 --c-puct 1.2 --metric accuracy --validation-labels challenge/data/val_labels.csv --id-col PassengerId --label-col Survived --challenge-path challenge/challenge.md --dataset-root challenge/data`
+- With Docker sandbox (auto-mounts dataset to `/data:ro`):
+  - Build image (optional): `docker build -t my-kaggle:py311 -f docker/Dockerfile .`
+  - Run:
+    - `uv run python -m kaggle_ts.cli search --docker --docker-image my-kaggle:py311 --docker-cpus 2 --docker-memory 4g --challenge-path challenge/challenge.md --dataset-root challenge/data --max-nodes 200 --k 8 --c-puct 1.2`
+- Recombination (one-time, after N nodes):
+  - Add: `--recombine-after 200 --recombine-top 8`
+- Prompt token budget (approximate):
+  - Add: `--max-prompt-tokens 2048`
 
-### Core Components
+3) Post-hoc embeddings (optional)
+- `uv run python -m kaggle_ts.cli embed --nodes runs/nodes.jsonl --out runs/embeddings.jsonl --batch-size 16`
 
-- **LLM Rewriter**: Handles code generation with context-aware prompts including competition details, parent code, and performance feedback
-- **Code Execution Sandbox**: Docker-based environment with pre-installed ML libraries
-- **Scorer**: Implements competition-specific evaluation metrics
-- **Tree Search Controller**: Manages solution tree with flat selection strategy
+## What Gets Produced
+- `runs/nodes.jsonl`: one JSON record per generated node (code, score, visits, parent, logs).
+- `runs/logs/<node_id>/`: `stdout.txt`, `stderr.txt`, and `meta.json` per node.
+- `runs/ideas.jsonl`: synthesized strategy seeds.
+- `runs/embeddings.jsonl`: code embeddings (when `GEMINI_API_KEY` is set).
 
-### Advanced Strategies
+## Key Commands (at a glance)
+- Ideas: `uv run python -m kaggle_ts.cli research --challenge-path challenge/challenge.md --out runs/ideas.jsonl`
+- Search (local): `uv run python -m kaggle_ts.cli search --max-nodes 200 --k 8 --c-puct 1.2 --challenge-path challenge/challenge.md --dataset-root challenge/data`
+- Search (accuracy): `... --metric accuracy --validation-labels challenge/data/val_labels.csv --id-col PassengerId --label-col Survived`
+- Search (Docker): `... --docker --docker-image my-kaggle:py311 --docker-cpus 2 --docker-memory 4g`
+- Embeddings: `uv run python -m kaggle_ts.cli embed --nodes runs/nodes.jsonl --out runs/embeddings.jsonl`
 
-- **AI-Powered Ideation**: Generates initial research ideas for seeding the search
-- **Idea Recombination**: Automatically combines strengths from different approaches
-- **Embedding-Based Analysis**: Uses text embeddings to analyze solution diversity
-
-## Configuration
-
-Key parameters to configure:
-- `max_nodes`: Total solutions to generate (500-2000 recommended)
-- `c_puct`: Exploration constant for PUCT formula
-- Validation dataset split
-- LLM models for different tasks
-
-## Dependencies
-
-- Python 3.x
-- Docker (for sandboxed execution)
-- Required ML libraries: pandas, scikit-learn, xgboost, etc.
-- LLM APIs (e.g., Gemini series)
-
-## Usage
-
-1. Configure competition details and parameters
-2. Initialize with baseline solution
-3. Run the core generation loop
-4. Analyze results using post-hoc tools
-5. Select the highest-scoring solution
-
-## Research Foundation
-
-This implementation is based on advanced techniques in automated machine learning and evolutionary computation, adapting AlphaZero-style tree search for code optimization rather than game playing.
-
-## License
-
-[Add license information here]
+## Notes
+- Provider selection is automatic: if `GEMINI_API_KEY` is set, Gemini is used; otherwise a stub provider runs.
+- The sandbox enforces timeouts and thread caps; Docker runs with `--network none`, CPU and memory limits, and dataset mounts.
+- The controller follows the paper: flat selection over all nodes, rank-normalized scores, flat prior, visit backpropagation, and K-parallel expansions per round.
