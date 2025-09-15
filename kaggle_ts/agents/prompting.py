@@ -45,7 +45,7 @@ def build_improve_prompt(context: Dict[str, str]) -> str:
     instruction = context.get("instruction", "Improve the code.").strip()
     feedback = context.get("feedback", "").strip()
     challenge = context.get("challenge", "").strip()
-    header = "You are an expert Python developer for Kaggle competitions.\n"
+    header = "You are an expert Python developer writing code for Kaggle competitions.\n"
     max_prompt_tokens = int(context.get("max_prompt_tokens", 2048))
     parent_budget = max(128, int(max_prompt_tokens * 0.6))
     challenge_budget = max(64, int(max_prompt_tokens * 0.25))
@@ -76,8 +76,9 @@ def build_improve_prompt(context: Dict[str, str]) -> str:
         "Requirements:\n"
         "- Load data from the DATASET_ROOT environment variable; never hardcode paths.\n"
         "- Do not read labels; only write submission.csv in CWD with columns PassengerId,Survived.\n"
+        "- Always drop PassengerId from BOTH train and test before preprocessing; set ColumnTransformer remainder='drop'.\n"
         "- Use sklearn ColumnTransformer with Pipeline: imputer+scaler for numeric, OneHotEncoder(handle_unknown='ignore') for categorical.\n"
-        "- Avoid nonstandard dependencies (e.g., category_encoders); use pandas, numpy, scikit-learn (optionally lightgbm/xgboost if available).\n"
+        "- Avoid heavy/nonstandard dependencies (e.g., tensorflow, catboost, category_encoders); prefer pandas, numpy, scikit-learn, and optionally lightgbm/xgboost if available.\n"
         "- Keep code concise and fast; avoid heavy CV/ensembles unless quick.\n\n"
     )
     parts.append(f"Instruction: {instruction}\n")

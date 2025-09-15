@@ -61,7 +61,14 @@ class LocalSandbox:
             artifacts: Dict[str, str] = {}
             sub = workdir / "submission.csv"
             if sub.exists():
-                artifacts["submission.csv"] = str(sub)
+                # Stage artifact to a stable temp path before cleaning workdir
+                dest_dir = Path(tempfile.mkdtemp(prefix="kts-art-"))
+                dest = dest_dir / "submission.csv"
+                try:
+                    shutil.copyfile(str(sub), str(dest))
+                    artifacts["submission.csv"] = str(dest)
+                except Exception:
+                    artifacts["submission.csv"] = str(sub)
 
             return RunResult(stdout, stderr, artifacts, False, None if proc.returncode == 0 else f"exit={proc.returncode}")
         finally:

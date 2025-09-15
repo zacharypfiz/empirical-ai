@@ -66,16 +66,14 @@ class GeminiProvider(LLMProvider):
                 if m is not None:
                     # Reduce output target a bit on retries
                     cfg_kwargs["max_output_tokens"] = max(128, int(m * (0.8 if attempt > 0 else 1.0)))
-                # Thinking policy: default is no config (thinking on by default).
-                # If env is 0 and model supports disable, send budget=0 to disable.
-                resolved_tb = _resolve_thinking_budget(
-                    model=self._model, raw_budget=self._thinking_budget
+                # Build per-model GenerateContentConfig
+                cfg = _build_generate_config(
+                    types=self._types,
+                    model=self._model,
+                    temperature=temp,
+                    max_output_tokens=cfg_kwargs.get("max_output_tokens"),
+                    raw_thinking_budget=self._thinking_budget,
                 )
-                if resolved_tb is not None:
-                    cfg_kwargs["thinking_config"] = self._types.ThinkingConfig(
-                        thinking_budget=resolved_tb
-                    )
-                cfg = self._types.GenerateContentConfig(**cfg_kwargs)
 
                 resp = await _to_thread(
                     self._client.models.generate_content,
@@ -143,24 +141,33 @@ async def _to_thread(func, *args, **kwargs):
     return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
 
 
-# --- Thinking helpers -------------------------------------------------------
+# --- Model-specific config builders ----------------------------------------
 
-def _model_supports_thinking_disable(model: str) -> bool:
-    """True if model supports disabling thinking via budget=0 (Flash only)."""
+def _is_flash_model(model: str) -> bool:
     m = model.lower()
-    return ("2.5" in m) and ("flash" in m)
+    return ("flash" in m) and ("2.5" in m)
 
 
-def _resolve_thinking_budget(*, model: str, raw_budget: Optional[int]) -> Optional[int]:
-    """Return 0 to disable thinking when supported; otherwise None.
+def _is_pro_model(model: str) -> bool:
+    m = model.lower()
+    return ("pro" in m) and ("2.5" in m)
 
-    - Default: None (no config; thinking stays enabled by default)
-    - If raw_budget == 0 and model is a 2.5 Flash variant: return 0
-    - Any other value: None
-    - Never send config for models like 2.5 Pro
+
+def _build_generate_config(*, types, model: str, temperature: float, max_output_tokens: Optional[int], raw_thinking_budget: Optional[int]):
+    """Build GenerateContentConfig per model family.
+
+    Policy summary:
+    - Default thinking behavior is implicit; do not send thinking_config unless disabling on Flash.
+    - Flash: if raw_thinking_budget == 0, send ThinkingConfig(budget=0) to disable.
+    - Pro: never send thinking_config (disabling not supported).
+    - Unknown: treat like Pro (no thinking_config).
     """
-    if not _model_supports_thinking_disable(model):
-        return None
-    if raw_budget == 0:
-        return 0
-    return None
+    cfg_kwargs = {"temperature": temperature}
+    if max_output_tokens is not None:
+        cfg_kwargs["max_output_tokens"] = max_output_tokens
+
+    if _is_flash_model(model) and raw_thinking_budget == 0:
+        cfg_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+
+    # Pro or unknown: no thinking_config
+    return types.GenerateContentConfig(**cfg_kwargs)

@@ -8,7 +8,9 @@ license = { text = "Proprietary" }
 authors = [{ name = "Empirical AI" }]
 dependencies = [
     "google-genai>=1.36.0",
+    "pandas>=2.3.2",
     "python-dotenv>=1.1.1",
+    "scikit-learn>=1.7.2",
 ]
 
 [project.scripts]

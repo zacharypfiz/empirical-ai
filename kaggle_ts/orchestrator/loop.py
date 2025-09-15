@@ -4,6 +4,8 @@ import asyncio
 import itertools
 import uuid
 from typing import Callable, Dict, List
+from pathlib import Path
+import shutil
 
 from ..agents.base import LLMRewriter, RunResult, Sandbox, Scorer, sanitize_code_output
 from ..core.controller import select_parents
@@ -47,6 +49,7 @@ async def expand_once(
             "validation_view": "true" if validation_view else "false",
         }
     )
+    llm_error_text: str | None = None
     try:
         child_code = await asyncio.wait_for(rewriter.run({"prompt": prompt}), timeout=llm_timeout_seconds)
         child_code = sanitize_code_output(child_code)
@@ -59,9 +62,17 @@ async def expand_once(
         ]
         if not child_code.strip() or any(m in child_code for m in bad_markers):
             raise RuntimeError("non-code output from LLM")
-    except Exception:
+    except Exception as e:
+        llm_error_text = f"llm_exception: {e}"
         # Treat LLM failure as a no-op mutation with a marker comment
         child_code = parent.code + "\n# llm_timeout_or_error"
+    # Quick syntax pre-check to avoid sandbox runs on obviously broken code
+    try:
+        compile(child_code, "<node>", "exec")
+    except SyntaxError as se:
+        if "llm_timeout_or_error" not in child_code:
+            llm_error_text = f"syntax_precheck: {se}"
+            child_code = parent.code + "\n# llm_timeout_or_error"
     run: RunResult = await sandbox.run(child_code, timeout_s=timeout_seconds)
     if run.error or run.timed_out:
         score = float("-1e300")
@@ -80,6 +91,7 @@ async def expand_once(
             "timed_out": run.timed_out,
             "error": run.error,
             "instruction": instruction or "",
+            **({"llm_error": llm_error_text} if llm_error_text else {}),
         },
     )
     return child
@@ -110,8 +122,57 @@ async def run_search(
     force_validation_view: bool = False,
 ) -> Node | None:
     if tree.size() == 0:
-        # Initialize with a simple baseline root
-        root = Node(id=_make_node_id(), parent_id=None, code="print('hello world')", score=0.0, visits=1)
+        # Initialize with a robust baseline that trains a quick model and writes submission.csv.
+        # Keeps deps to pandas/numpy/scikit-learn only and avoids fragile column handling.
+        baseline_code = (
+            "import os, pandas as pd\n"
+            "from sklearn.compose import ColumnTransformer\n"
+            "from sklearn.preprocessing import OneHotEncoder, StandardScaler\n"
+            "from sklearn.impute import SimpleImputer\n"
+            "from sklearn.pipeline import Pipeline\n"
+            "from sklearn.linear_model import LogisticRegression\n"
+            "\n"
+            "ROOT = os.environ.get('DATASET_ROOT', '.')\n"
+            "train = pd.read_csv(os.path.join(ROOT, 'train.csv'))\n"
+            "test = pd.read_csv(os.path.join(ROOT, 'test.csv'))\n"
+            "id_col = 'PassengerId'\n"
+            "label_col = 'Survived'\n"
+            "# Simple, fast features with light FE\n"
+            "def add_basic_features(df):\n"
+            "    if 'SibSp' in df.columns and 'Parch' in df.columns:\n"
+            "        df['FamilySize'] = df['SibSp'] + df['Parch'] + 1\n"
+            "        df['IsAlone'] = (df['FamilySize'] == 1).astype(int)\n"
+            "    return df\n"
+            "train = add_basic_features(train.copy())\n"
+            "test = add_basic_features(test.copy())\n"
+            "X = train.drop([label_col], axis=1)\n"
+            "y = train[label_col]\n"
+            "test_ids = test[id_col] if id_col in test.columns else None\n"
+            "# Candidate feature sets (present columns only)\n"
+            "num_cols_all = ['Age','Fare','SibSp','Parch','FamilySize','IsAlone']\n"
+            "cat_cols_all = ['Pclass','Sex','Embarked']\n"
+            "num_cols = [c for c in num_cols_all if c in X.columns]\n"
+            "cat_cols = [c for c in cat_cols_all if c in X.columns]\n"
+            "# Always drop PassengerId before preprocessing to avoid train/test schema mismatch\n"
+            "cols_to_fit = [c for c in X.columns if c not in (set(num_cols) | set(cat_cols) | {id_col})]\n"
+            "# Preprocess numeric and categorical; drop anything else\n"
+            "pre = ColumnTransformer(\n"
+            "    transformers=[\n"
+            "        ('num', Pipeline([('imp', SimpleImputer(strategy='median')), ('sc', StandardScaler())]), num_cols),\n"
+            "        ('cat', Pipeline([('imp', SimpleImputer(strategy='most_frequent')), ('ohe', OneHotEncoder(handle_unknown='ignore'))]), cat_cols),\n"
+            "    ],\n"
+            "    remainder='drop'\n"
+            ")\n"
+            "clf = Pipeline([('pre', pre), ('lr', LogisticRegression(max_iter=500))])\n"
+            "X_fit = X.drop(columns=[id_col], errors='ignore')\n"
+            "X_test = test.drop(columns=[id_col], errors='ignore')\n"
+            "clf.fit(X_fit, y)\n"
+            "pred = clf.predict(X_test)\n"
+            "sub = pd.DataFrame({id_col: test_ids if test_ids is not None else range(len(pred)), label_col: pred})\n"
+            "sub.to_csv('submission.csv', index=False)\n"
+            "print('baseline submission written:', len(sub))\n"
+        )
+        root = Node(id=_make_node_id(), parent_id=None, code=baseline_code, score=0.0, visits=1)
         tree.add(root)
 
     # Semaphore for sandbox concurrency
@@ -175,9 +236,20 @@ async def run_search(
             # Persist artifacts before storing node records
             if store is not None:
                 try:
-                    persisted = store.persist_artifacts(child.id, child.logs.get("artifacts", {}))
+                    # Persist artifacts to runs dir
+                    original_artifacts = dict(child.logs.get("artifacts", {}))
+                    persisted = store.persist_artifacts(child.id, original_artifacts)
                     if persisted:
                         child.logs["artifacts"] = persisted
+                    # Cleanup temp artifact dirs (kts-art-*), if any
+                    for src in (original_artifacts or {}).values():
+                        try:
+                            p = Path(src)
+                            parent_dir = p.parent
+                            if parent_dir.name.startswith("kts-art-"):
+                                shutil.rmtree(parent_dir, ignore_errors=True)
+                        except Exception:
+                            continue
                 except Exception:
                     pass
             tree.add(child)
