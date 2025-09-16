@@ -205,7 +205,13 @@ class GeminiEmbeddings:
         import asyncio
 
         contents = list(texts)
-        resp = await asyncio.to_thread(self._client.models.embed_content, self._model, contents)
+        config = types.EmbedContentConfig(task_type="CLUSTERING")
+        resp = await asyncio.to_thread(
+            self._client.models.embed_content,
+            model=self._model,
+            contents=contents,
+            config=config,
+        )
         if hasattr(resp, "embeddings") and isinstance(resp.embeddings, list):
             return [getattr(e, "values", getattr(e, "embedding", [])) for e in resp.embeddings]
         emb = getattr(resp, "embedding", None) or getattr(resp, "values", None)
