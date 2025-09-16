@@ -39,10 +39,15 @@ def code_llm_provider():
     tb_env: Optional[str] = os.getenv("CODE_THINKING_BUDGET")
     # Back-compat fallbacks
     if not model:
-        model = os.getenv("GEMINI_MODEL_CODE") or os.getenv("GEMINI_MODEL") or "gemini-2.5-flash"
+        model = os.getenv("GEMINI_MODEL_CODE") or os.getenv("GEMINI_MODEL") or "gemini-2.5-pro"
     if tb_env is None:
         tb_env = os.getenv("GEMINI_THINKING_BUDGET_CODE") or os.getenv("GEMINI_THINKING_BUDGET")
-    thinking_budget = int(tb_env) if tb_env else None
+    # Default: disable thinking for Flash if not explicitly set
+    if tb_env is not None:
+        tb_env = tb_env.strip()
+        thinking_budget = int(tb_env) if tb_env else None
+    else:
+        thinking_budget = None
     return GeminiProvider(model=model, thinking_budget=thinking_budget)
 
 
@@ -57,10 +62,14 @@ def idea_llm_provider():
     model = os.getenv("IDEA_MODEL")
     tb_env: Optional[str] = os.getenv("IDEA_THINKING_BUDGET")
     if not model:
-        model = os.getenv("GEMINI_MODEL_IDEA") or "gemini-2.5-flash"
+        model = os.getenv("GEMINI_MODEL_IDEA") or "gemini-2.5-pro"
     if tb_env is None:
         tb_env = os.getenv("GEMINI_THINKING_BUDGET_IDEA")
-    thinking_budget = int(tb_env) if tb_env else None
+    if tb_env is not None:
+        tb_env = tb_env.strip()
+        thinking_budget = int(tb_env) if tb_env else None
+    else:
+        thinking_budget = None
     return GeminiProvider(model=model, thinking_budget=thinking_budget)
 
 

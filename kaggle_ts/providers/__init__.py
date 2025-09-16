@@ -1,2 +1,6 @@
-from .gemini import GeminiProvider, GeminiEmbeddings  # noqa: F401
-
+from .gemini import (
+    GeminiProvider,           # compatibility shim
+    GeminiFlashProvider,
+    GeminiProProvider,
+    GeminiEmbeddings,
+)  # noqa: F401

@@ -3,11 +3,41 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import subprocess
 
 from .agents.base import LLMRewriter
 from .agents.stubs import StubLLMProvider, StubSandbox, StubScorer
 from .core.types import SolutionTree
 from .orchestrator.loop import run_search
+
+
+def _ensure_docker_ready(image: str) -> None:
+    """Fail fast if Docker CLI or daemon is unavailable."""
+    try:
+        subprocess.run(
+            ["docker", "info"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:  # pragma: no cover - depends on host setup
+        raise SystemExit("Docker executable not found; re-run without --docker") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "unknown error").strip()
+        msg = f"Unable to talk to Docker daemon: {detail}"
+        raise SystemExit(msg) from exc
+    # Optionally emit info when the daemon is reachable but image missing
+    try:
+        subprocess.run(
+            ["docker", "image", "inspect", image],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        print(f"Warning: Docker image '{image}' not present locally; it will be pulled on first use.")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -18,7 +48,7 @@ def _parse_args() -> argparse.Namespace:
     s_search.add_argument("--max-nodes", type=int, default=50)
     s_search.add_argument("--k", dest="k_parallel", type=int, default=4)
     s_search.add_argument("--c-puct", type=float, default=1.2)
-    s_search.add_argument("--timeout-seconds", type=int, default=5)
+    s_search.add_argument("--timeout-seconds", type=int, default=20)
     s_search.add_argument("--metric", choices=["accuracy", "mse"], default="accuracy")
     s_search.add_argument("--ideas-path", type=str, default=None, help="JSONL ideas file for seeding")
     s_search.add_argument("--seeds", type=int, default=0, help="Use first N ideas as instruction seeds")
@@ -130,6 +160,7 @@ def main() -> None:
                     mounts.setdefault(labels_dir, "/labels:ro")
                     set_env_label = "/labels/" + os.path.basename(labels_abs)
                 env_map["VALIDATION_LABELS"] = set_env_label
+            _ensure_docker_ready(args.docker_image)
             sandbox = DockerSandbox(
                 image=args.docker_image,
                 cpus=args.docker_cpus,
