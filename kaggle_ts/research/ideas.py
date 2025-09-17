@@ -118,16 +118,25 @@ def _parse_markdown_like(text: str) -> List[Idea]:
     return ideas
 
 
-async def synthesize_ideas(challenge_text: str, *, max_ideas: int = 10) -> List[Idea]:
+async def synthesize_ideas(
+    challenge_text: str,
+    *,
+    max_ideas: int = 10,
+    max_output_tokens: int | None = None,
+) -> List[Idea]:
     provider = idea_llm_provider()
     prompt = PROMPT.format(challenge=challenge_text)
     # Allow override via env IDEA_MAX_OUTPUT_TOKENS; default to 1024 for concise ideas
-    import os
-    idea_max = os.getenv("IDEA_MAX_OUTPUT_TOKENS")
-    try:
-        max_out = int(idea_max) if idea_max else 1024
-    except Exception:
-        max_out = 1024
+    if max_output_tokens is None:
+        import os
+
+        idea_max = os.getenv("IDEA_MAX_OUTPUT_TOKENS")
+        try:
+            max_out = int(idea_max) if idea_max else 1024
+        except Exception:
+            max_out = 1024
+    else:
+        max_out = max_output_tokens
     text = await provider.generate(prompt, max_tokens=max_out)
     # Parse in order of strictness
     ideas = _parse_jsonl(text)

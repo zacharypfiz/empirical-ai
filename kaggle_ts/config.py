@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from .config_loader import get_config_value
+
 # Load .env file if it exists
 try:
     from dotenv import load_dotenv
@@ -13,6 +15,17 @@ except ImportError:
 
 def _has_gemini() -> bool:
     return bool(os.getenv("GEMINI_API_KEY"))
+
+
+def _model_setting(name: str) -> Optional[str]:
+    value = get_config_value("models", name)
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    return str(value)
 
 
 def default_llm_provider():
@@ -35,13 +48,20 @@ def code_llm_provider():
     from .providers.gemini import GeminiProvider
 
     # Provider-agnostic first
-    model = os.getenv("CODE_MODEL")
+    model = os.getenv("CODE_MODEL") or _model_setting("CODE_MODEL")
     tb_env: Optional[str] = os.getenv("CODE_THINKING_BUDGET")
+    if tb_env is None:
+        tb_env = _model_setting("CODE_THINKING_BUDGET")
     # Back-compat fallbacks
     if not model:
         model = os.getenv("GEMINI_MODEL_CODE") or os.getenv("GEMINI_MODEL") or "gemini-2.5-pro"
     if tb_env is None:
-        tb_env = os.getenv("GEMINI_THINKING_BUDGET_CODE") or os.getenv("GEMINI_THINKING_BUDGET")
+        tb_env = (
+            os.getenv("GEMINI_THINKING_BUDGET_CODE")
+            or os.getenv("GEMINI_THINKING_BUDGET")
+            or _model_setting("GEMINI_THINKING_BUDGET_CODE")
+            or _model_setting("GEMINI_THINKING_BUDGET")
+        )
     # Default: disable thinking for Flash if not explicitly set
     if tb_env is not None:
         tb_env = tb_env.strip()
@@ -59,12 +79,17 @@ def idea_llm_provider():
         return StubLLMProvider(seed=1337)
     from .providers.gemini import GeminiProvider
 
-    model = os.getenv("IDEA_MODEL")
+    model = os.getenv("IDEA_MODEL") or _model_setting("IDEA_MODEL")
     tb_env: Optional[str] = os.getenv("IDEA_THINKING_BUDGET")
+    if tb_env is None:
+        tb_env = _model_setting("IDEA_THINKING_BUDGET")
     if not model:
         model = os.getenv("GEMINI_MODEL_IDEA") or "gemini-2.5-pro"
     if tb_env is None:
-        tb_env = os.getenv("GEMINI_THINKING_BUDGET_IDEA")
+        tb_env = (
+            os.getenv("GEMINI_THINKING_BUDGET_IDEA")
+            or _model_setting("GEMINI_THINKING_BUDGET_IDEA")
+        )
     if tb_env is not None:
         tb_env = tb_env.strip()
         thinking_budget = int(tb_env) if tb_env else None
@@ -78,5 +103,11 @@ def embeddings_provider():
         return None
     from .providers.gemini import GeminiEmbeddings
 
-    model = os.getenv("EMBEDDING_MODEL") or os.getenv("GEMINI_EMBEDDING_MODEL") or "gemini-embedding-001"
+    model = (
+        os.getenv("EMBEDDING_MODEL")
+        or _model_setting("EMBEDDING_MODEL")
+        or os.getenv("GEMINI_EMBEDDING_MODEL")
+        or _model_setting("GEMINI_EMBEDDING_MODEL")
+        or "gemini-embedding-001"
+    )
     return GeminiEmbeddings(model=model)

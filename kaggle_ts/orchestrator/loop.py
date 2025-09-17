@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import uuid
-from typing import Callable, Dict, List
+from typing import Any, Callable, Dict, List
 from pathlib import Path
 import shutil
 
@@ -50,9 +50,12 @@ async def expand_once(
         }
     )
     llm_error_text: str | None = None
+    raw_llm_output: str | None = None
     try:
-        child_code = await asyncio.wait_for(rewriter.run({"prompt": prompt}), timeout=llm_timeout_seconds)
-        child_code = sanitize_code_output(child_code)
+        raw_llm_output = await asyncio.wait_for(
+            rewriter.run({"prompt": prompt}), timeout=llm_timeout_seconds
+        )
+        child_code = sanitize_code_output(raw_llm_output)
         # Guard: if LLM returned prompt text or error banner, fallback to parent
         bad_markers = [
             "Gemini API error",
@@ -78,21 +81,27 @@ async def expand_once(
         score = float("-1e300")
     else:
         score = await scorer.run(run.artifacts, higher_is_better=higher_is_better)
+    logs: dict[str, Any] = {
+        "stdout": run.stdout,
+        "stderr": run.stderr,
+        "artifacts": run.artifacts,
+        "timed_out": run.timed_out,
+        "error": run.error,
+        "instruction": instruction or "",
+        **({"llm_error": llm_error_text} if llm_error_text else {}),
+    }
+    if raw_llm_output is not None:
+        max_chars = 4000
+        raw_trimmed = raw_llm_output if len(raw_llm_output) <= max_chars else raw_llm_output[:max_chars] + "..."
+        logs["llm_raw"] = raw_trimmed
+
     child = Node(
         id=_make_node_id(),
         parent_id=parent.id,
         code=child_code,
         score=score,
         visits=1,
-        logs={
-            "stdout": run.stdout,
-            "stderr": run.stderr,
-            "artifacts": run.artifacts,
-            "timed_out": run.timed_out,
-            "error": run.error,
-            "instruction": instruction or "",
-            **({"llm_error": llm_error_text} if llm_error_text else {}),
-        },
+        logs=logs,
     )
     return child
 
@@ -313,7 +322,10 @@ async def run_search(
                 for i in range(0, len(top) - 1, 2):
                     pairs.append((top[i], top[i + 1]))
             if pairs:
-                hybrids = await synthesize_hybrids(pairs)
+                hybrid_log = None
+                if store is not None:
+                    hybrid_log = store.base / "logs" / "recombine_raw.jsonl"
+                hybrids = await synthesize_hybrids(pairs, log_path=hybrid_log)
                 for h in hybrids:
                     if h not in seed_buffer:
                         seed_buffer.append(h)

@@ -9,6 +9,7 @@ from .agents.base import LLMRewriter
 from .agents.stubs import StubLLMProvider, StubSandbox, StubScorer
 from .core.types import SolutionTree
 from .orchestrator.loop import run_search
+from .config_loader import load_cli_config, split_cli_config, get_config_value
 
 
 def _ensure_docker_ready(image: str) -> None:
@@ -41,12 +42,30 @@ def _ensure_docker_ready(image: str) -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser("kaggle-ts")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    # Pre-parse --config so we can load defaults before constructing the full parser
+    config_pre = argparse.ArgumentParser(add_help=False)
+    config_pre.add_argument("--config", type=str, default=None, help="Path to config file")
+    config_args, remaining_argv = config_pre.parse_known_args()
+    config_path, raw_config = load_cli_config(config_args.config)
+    global_defaults, per_command_defaults = split_cli_config(raw_config)
+
+    parser = argparse.ArgumentParser("kaggle-ts")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    config_default = config_args.config or (str(config_path) if config_path else None)
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=config_default,
+        help="Path to config file (defaults: config.toml, kts.toml, conf.toml)",
+    )
+
+    subparsers: dict[str, argparse.ArgumentParser] = {}
 
     s_search = sub.add_parser("search", help="Run flat PUCT search")
-    s_search.add_argument("--max-nodes", type=int, default=50)
-    s_search.add_argument("--k", dest="k_parallel", type=int, default=4)
+    subparsers["search"] = s_search
+    s_search.add_argument("--max-nodes", type=int, default=20)
+    s_search.add_argument("--k", dest="k_parallel", type=int, default=3)
     s_search.add_argument("--c-puct", type=float, default=1.2)
     s_search.add_argument("--timeout-seconds", type=int, default=20)
     s_search.add_argument("--metric", choices=["accuracy", "mse"], default="accuracy")
@@ -54,19 +73,19 @@ def _parse_args() -> argparse.Namespace:
     s_search.add_argument("--seeds", type=int, default=0, help="Use first N ideas as instruction seeds")
     s_search.add_argument("--validation-labels", type=str, default=None, help="Path to validation labels CSV")
     s_search.add_argument("--challenge-path", type=str, default="challenge/challenge.md", help="Path to challenge description for prompt context")
-    s_search.add_argument("--dataset-root", type=str, default="challenge/data", help="Path to dataset root directory")
+    s_search.add_argument("--dataset-root", type=str, default="runs/val_dataset", help="Path to dataset root directory")
     s_search.add_argument("--docker", action="store_true", help="Use Docker sandbox instead of local")
     s_search.add_argument("--docker-image", type=str, default="python:3.11-slim")
-    s_search.add_argument("--docker-cpus", type=float, default=1.0)
-    s_search.add_argument("--docker-memory", type=str, default="2g")
+    s_search.add_argument("--docker-cpus", type=float, default=2.0)
+    s_search.add_argument("--docker-memory", type=str, default="4g")
     s_search.add_argument("--mount", action="append", default=None, help="Host:Container[:ro|rw] mount (repeatable)")
-    s_search.add_argument("--recombine-after", type=int, default=0, help="Trigger recombination after this many nodes (0=disable)")
+    s_search.add_argument("--recombine-after", type=int, default=4, help="Trigger recombination after this many nodes (0=disable)")
     s_search.add_argument("--recombine-top", type=int, default=4, help="Top-N nodes used to build recombination pairs")
     s_search.add_argument("--max-prompt-tokens", type=int, default=2048, help="Approximate max tokens for prompt truncation")
     s_search.add_argument("--id-col", type=str, default=None, help="Override ID column name for metrics")
     s_search.add_argument("--label-col", type=str, default=None, help="Override label column name for metrics")
     s_search.add_argument("--pred-col", type=str, default=None, help="Override prediction column name for metrics")
-    s_search.add_argument("--llm-timeout-seconds", type=int, default=60, help="Timeout for LLM generation per expansion")
+    s_search.add_argument("--llm-timeout-seconds", type=int, default=90, help="Timeout for LLM generation per expansion")
     s_search.add_argument("--emb-timeout-seconds", type=int, default=30, help="Timeout for embedding calls during recombination")
     s_search.add_argument("--runs-dir", type=str, default="runs", help="Directory to store nodes/logs/artifacts")
     s_search.add_argument("--fresh", action="store_true", help="Clear prior nodes/logs/artifacts in runs dir before starting")
@@ -74,15 +93,25 @@ def _parse_args() -> argparse.Namespace:
     # Validation-view is the only supported validation workflow now; no separate flag needed.
 
     s_research = sub.add_parser("research", help="Synthesize strategy ideas from challenge.md")
+    subparsers["research"] = s_research
     s_research.add_argument("--challenge-path", type=str, default="challenge/challenge.md")
     s_research.add_argument("--out", type=str, default="runs/ideas.jsonl")
     s_research.add_argument("--max-ideas", type=int, default=8)
+    s_research.add_argument(
+        "--idea-max-output-tokens",
+        type=int,
+        default=3072,
+        help="Max output tokens for idea generation (env IDEA_MAX_OUTPUT_TOKENS as fallback)",
+    )
+
     s_embed = sub.add_parser("embed", help="Compute embeddings for generated nodes' code")
+    subparsers["embed"] = s_embed
     s_embed.add_argument("--nodes", type=str, default="runs/nodes.jsonl")
     s_embed.add_argument("--out", type=str, default="runs/embeddings.jsonl")
     s_embed.add_argument("--batch-size", type=int, default=16)
 
     s_makeval = sub.add_parser("make-val", help="Create validation labels CSV from train.csv")
+    subparsers["make-val"] = s_makeval
     s_makeval.add_argument("--train-path", type=str, default="challenge/data/train.csv")
     s_makeval.add_argument("--out", type=str, default="challenge/data/val_labels.csv")
     s_makeval.add_argument("--id-col", type=str, default="PassengerId")
@@ -91,7 +120,22 @@ def _parse_args() -> argparse.Namespace:
     s_makeval.add_argument("--random-state", type=int, default=42)
     s_makeval.add_argument("--no-stratify", action="store_true")
 
-    return p.parse_args()
+    # Apply config defaults
+    if global_defaults:
+        for parser_obj in subparsers.values():
+            parser_obj.set_defaults(**global_defaults)
+    for cmd_name, defaults in per_command_defaults.items():
+        parser_obj = subparsers.get(cmd_name)
+        if parser_obj and defaults:
+            parser_obj.set_defaults(**defaults)
+
+    args = parser.parse_args(remaining_argv)
+    if args.config:
+        os.environ.setdefault("KTS_CONFIG", args.config)
+    # Ensure the resolved config path is always visible on the parsed args
+    if config_path and not args.config:
+        args.config = str(config_path)
+    return args
 
 
 def main() -> None:
@@ -102,12 +146,26 @@ def main() -> None:
         from .config import code_llm_provider
         from .agents.stubs import StubSandbox, StubScorer
 
-        # Code output token budget (flag > env > default)
-        code_max_env = os.getenv("CODE_MAX_OUTPUT_TOKENS")
-        try:
-            code_max_tokens = args.code_max_output_tokens if args.code_max_output_tokens is not None else (int(code_max_env) if code_max_env else None)
-        except Exception:
-            code_max_tokens = None
+        # Code output token budget (flag > env > config > default)
+        code_max_tokens = args.code_max_output_tokens
+        if code_max_tokens is None:
+            code_max_env = os.getenv("CODE_MAX_OUTPUT_TOKENS")
+            if code_max_env:
+                try:
+                    code_max_tokens = int(code_max_env)
+                except Exception:
+                    code_max_tokens = None
+        if code_max_tokens is None:
+            cfg_val = get_config_value("search", "code_max_output_tokens")
+            if cfg_val is None:
+                cfg_val = get_config_value("models", "code_max_output_tokens")
+            if cfg_val is not None:
+                try:
+                    code_max_tokens = int(cfg_val)
+                except Exception:
+                    code_max_tokens = None
+        if code_max_tokens is None:
+            code_max_tokens = 3072
         rewriter = LLMRewriter(code_llm_provider(), default_max_tokens=code_max_tokens)
         challenge_text = None
         if args.challenge_path and os.path.exists(args.challenge_path):
@@ -232,7 +290,32 @@ def main() -> None:
         from .research.ideas import synthesize_ideas, write_ideas_jsonl
 
         challenge_text = Path(args.challenge_path).read_text(encoding="utf-8")
-        ideas = asyncio.run(synthesize_ideas(challenge_text, max_ideas=args.max_ideas))
+        idea_max_tokens = args.idea_max_output_tokens
+        if idea_max_tokens is None:
+            idea_max_env = os.getenv("IDEA_MAX_OUTPUT_TOKENS")
+            if idea_max_env:
+                try:
+                    idea_max_tokens = int(idea_max_env)
+                except Exception:
+                    idea_max_tokens = None
+        if idea_max_tokens is None:
+            cfg_val = get_config_value("research", "idea_max_output_tokens")
+            if cfg_val is None:
+                cfg_val = get_config_value("models", "idea_max_output_tokens")
+            if cfg_val is not None:
+                try:
+                    idea_max_tokens = int(cfg_val)
+                except Exception:
+                    idea_max_tokens = None
+        if idea_max_tokens is None:
+            idea_max_tokens = 1024
+        ideas = asyncio.run(
+            synthesize_ideas(
+                challenge_text,
+                max_ideas=args.max_ideas,
+                max_output_tokens=idea_max_tokens,
+            )
+        )
         write_ideas_jsonl(args.out, ideas)
         print(f"Wrote {len(ideas)} ideas to {args.out}")
     elif args.cmd == "embed":

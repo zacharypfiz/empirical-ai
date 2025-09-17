@@ -18,6 +18,34 @@ Project layout assumptions
   - `GEMINI_API_KEY=...`
   - Optional model buckets: `CODE_MODEL`, `IDEA_MODEL`, `EMBEDDING_MODEL`
 
+## Configuration
+- Commands read defaults from `config.toml` (or `kts.toml` / `conf.toml`) in the project root.
+- Override the location with `--config path/to/file.toml`.
+- Use a shared `[defaults]` table plus optional per-command tables. Keys match the argparse destination names:
+
+```toml
+[defaults]
+runs_dir = "runs/exp_val"
+
+[search]
+max_nodes = 200
+metric = "accuracy"
+dataset_root = "runs/val_dataset"
+validation_labels = "runs/val_dataset/val_labels.csv"
+recombine_after = 200
+
+[research]
+challenge_path = "challenge/challenge.md"
+
+[models]
+CODE_MODEL = "gemini-2.5-pro"
+IDEA_MODEL = "gemini-2.5-flash"
+EMBEDDING_MODEL = "gemini-embedding-001"
+```
+
+- Environment variables remain the right place for secrets (e.g., API keys).
+- Entries in `[models]` mirror the existing environment variables (e.g., `CODE_MODEL`, `CODE_THINKING_BUDGET`) and act as defaults whenever the corresponding env var is absent.
+
 ## Pipeline Steps
 
 1) Generate strategy ideas (from challenge.md)

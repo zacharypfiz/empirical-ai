@@ -1,0 +1,39 @@
+[defaults]
+runs_dir = "runs/exp_val"
+
+[search]
+max_nodes = 60
+k_parallel = 3
+c_puct = 1.2
+metric = "accuracy"
+dataset_root = "runs/val_dataset"
+validation_labels = "runs/val_dataset/val_labels.csv"
+recombine_after = 20
+recombine_top = 6
+docker = true
+docker_image = "my-kaggle:py311"
+fresh = true
+max_prompt_tokens = 2048
+code_max_output_tokens = 4096
+seeds = 8
+ideas_path = "runs/ideas.jsonl"
+
+[research]
+challenge_path = "challenge/challenge.md"
+out = "runs/ideas.jsonl"
+max_ideas = 8
+idea_max_output_tokens = 3072
+
+[embed]
+nodes = "runs/exp_val/nodes.jsonl"
+out = "runs/exp_val/embeddings.jsonl"
+batch_size = 16
+
+[models]
+code_model = "gemini-2.5-flash"
+code_thinking_budget = 0
+
+idea_model = "gemini-2.5-flash"
+idea_thinking_budget = 0
+
+embedding_model = "gemini-embedding-001"
